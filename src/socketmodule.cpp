@@ -733,10 +733,27 @@ set_gaierror(socket_state *state, int error)
 #include <BluePyCpp.h>
 #include <carbonio.h>
 
+// The type passed to socket() may carry SOCK_NONBLOCK / SOCK_CLOEXEC bit
+// flags. init_sockobject strips these from s->sock_type, so anything that
+// compares a raw type against SOCK_STREAM / SOCK_DGRAM must strip them too,
+// otherwise creation and close disagree about who owns the fd.
+static int strip_sock_type_flags( int sock_type )
+{
+#ifdef SOCK_NONBLOCK
+	sock_type &= ~SOCK_NONBLOCK;
+#endif
+#ifdef SOCK_CLOEXEC
+	sock_type &= ~SOCK_CLOEXEC;
+#endif
+	return sock_type;
+}
+
 bool is_managed_by_libuv( int sock_type, int family )
 {
+	sock_type = strip_sock_type_flags( sock_type );
+
 	if ( sock_type == SOCK_DGRAM ) {
-		return true;
+		return family == AF_INET || family == AF_INET6;
 	}
 
 	if ( sock_type == SOCK_STREAM ) {
@@ -6048,7 +6065,7 @@ sock_finalize(PySocketSockObject *s)
         s->sock_fd = INVALID_SOCKET;
 
         /* We do not want to retry upon EINTR: see sock_close() */
-		if ( is_managed_by_libuv( s ) )
+		if ( is_managed_by_libuv( s->sock_type, s->sock_family ) )
 		{
 			if ( is_valid_uv_handle( s->uv_handle ) )
 			{
@@ -6387,7 +6404,7 @@ sock_initobj_impl(PySocketSockObject *self, int family, int type, int proto,
 				if( s->uv_handle == nullptr )
 				{
 					// No handle found for re-use, must create one.
-					if( type == SOCK_STREAM )
+					if( strip_sock_type_flags( type ) == SOCK_STREAM )
 					{
 						auto handle = create_uv_tcp_handle( &fd, family );
 						if( !handle )
@@ -6396,7 +6413,7 @@ sock_initobj_impl(PySocketSockObject *self, int family, int type, int proto,
 						}
 						s->uv_handle = reinterpret_cast<uv_handle_t*>( handle );
 					}
-					else if( type == SOCK_DGRAM )
+					else if( strip_sock_type_flags( type ) == SOCK_DGRAM )
 					{
 						auto handle = create_uv_udp_handle( &fd, family );
 						if( !handle )
@@ -6422,7 +6439,7 @@ sock_initobj_impl(PySocketSockObject *self, int family, int type, int proto,
         }
 		if ( is_managed_by_libuv( type, family ))
 		{
-			if( type == SOCK_STREAM )
+			if( strip_sock_type_flags( type ) == SOCK_STREAM )
 			{
 				auto handle = create_uv_tcp_handle( &fd, family );
 				if( !handle )
@@ -6431,7 +6448,7 @@ sock_initobj_impl(PySocketSockObject *self, int family, int type, int proto,
 				}
 				s->uv_handle = reinterpret_cast<uv_handle_t*>( handle );
 			}
-			else if( type == SOCK_DGRAM )
+			else if( strip_sock_type_flags( type ) == SOCK_DGRAM )
 			{
 				auto handle = create_uv_udp_handle( &fd, family );
 				if( !handle )
@@ -6492,7 +6509,7 @@ sock_initobj_impl(PySocketSockObject *self, int family, int type, int proto,
 			s->uv_handle = LookupHandle( fd );
 			if ( ! s->uv_handle && is_managed_by_libuv( type, family ) )
 			{
-				if( type == SOCK_STREAM )
+				if( strip_sock_type_flags( type ) == SOCK_STREAM )
 				{
 					auto handle = create_uv_tcp_handle(&fd, family);
 					if( !handle )
@@ -6501,7 +6518,7 @@ sock_initobj_impl(PySocketSockObject *self, int family, int type, int proto,
 					}
 					s->uv_handle = reinterpret_cast<uv_handle_t*>(handle);
 				}
-				else if( type == SOCK_DGRAM )
+				else if( strip_sock_type_flags( type ) == SOCK_DGRAM )
 				{
 					auto handle = create_uv_udp_handle(&fd, family);
 					if( !handle )
@@ -7370,7 +7387,7 @@ socket_dup(PyObject *self, PyObject *fdobj)
 
 	if( is_managed_by_libuv( type, family ) )
 	{
-		if( type == SOCK_STREAM )
+		if( strip_sock_type_flags( type ) == SOCK_STREAM )
 		{
 			if (!dup_uv_tcp_handle( newfd ) )
 			{
@@ -7378,7 +7395,7 @@ socket_dup(PyObject *self, PyObject *fdobj)
 				return nullptr;
 			}
 		}
-		else if( type == SOCK_DGRAM )
+		else if( strip_sock_type_flags( type ) == SOCK_DGRAM )
 		{
 			if ( !dup_uv_udp_handle( newfd ) )
 			{
@@ -7482,7 +7499,7 @@ socket_socketpair(PyObject *self, PyObject *args)
 		goto finally;
 	}
 
-	if( type == SOCK_STREAM )
+	if( strip_sock_type_flags( type ) == SOCK_STREAM )
 	{
 		auto handle = dup_uv_tcp_handle( sv[0] );
 		if( !handle )
@@ -7495,7 +7512,7 @@ socket_socketpair(PyObject *self, PyObject *args)
 			goto finally;
 		}
 	}
-	else if( type == SOCK_DGRAM )
+	else if( strip_sock_type_flags( type ) == SOCK_DGRAM )
 	{
 		auto handle = dup_uv_udp_handle( sv[0] );
 		if( !handle )
